@@ -1,4 +1,6 @@
 use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncBufReadExt, BufReader};
+
 
 #[tokio::main]
 async fn main() {
@@ -19,4 +21,13 @@ async fn main() {
 
 async fn handle_client(socket: TcpStream) {
     println!("Client connected from {}", socket.peer_addr().unwrap());
+
+    let reader = BufReader::new(socket);
+    let mut lines = reader.lines();
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        println!("Received {}", line);
+    }
+
+    println!("Client disconnected");
 }
