@@ -1,4 +1,4 @@
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
 async fn main() {
@@ -8,8 +8,15 @@ async fn main() {
     println!("Server listening on port 8888");
 
     loop {
-        let(_socket, addr) = listener.accept().await.expect("Failed to accept");
+        let(socket, addr) = listener.accept().await.expect("Failed to accept");
         println!("New connection from {}", addr);
-    }
 
+        tokio::spawn(async move {
+            handle_client(socket).await;
+        });
+    }
+}
+
+async fn handle_client(socket: TcpStream) {
+    println!("Client connected from {}", socket.peer_addr().unwrap());
 }
