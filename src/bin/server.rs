@@ -4,7 +4,6 @@ mod protocol;
 use protocol::{ClientMessage, ServerMessage};
 
 use std::collections::HashMap;
-use std::net::Shutdown::Write;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -14,7 +13,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 use serde_json;
-use tokio::net::windows::named_pipe::PipeEnd::Server;
 
 #[derive(Clone)]
 struct Client {
@@ -133,16 +131,28 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
     };
 
     if !is_valid_username(&username) {
-        let _ = writer.write_all(b"Invalid username.\n").await;
+        let _ = send_json(
+            &mut writer,
+            &ServerMessage::Error {
+                message: "Invalid username".to_string(),
+            },
+        ).await;
+
         return;
     }
 
     if username_exists(&clients, &username).await {
-        let _ = writer.write_all(b"Username already taken.\n").await;
+        let _ = send_json(
+            &mut writer,
+            &ServerMessage::Error {
+                message: "Username already taken".to_string(),
+            },
+        ).await;
+
         return;
     }
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<ServerMessage>();
 
     {
         let mut clients_guard = clients.lock().await;
@@ -155,30 +165,58 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
         );
     }
 
-    let welcome = format!("Welcome, {username}!\n");
-    let _ = writer.write_all(welcome.as_bytes()).await;
+    let _ = send_json(
+        &mut writer,
+        &ServerMessage::Welcome {
+            message: format!("Welcome {}", username),
+        },
+    ).await;
 
     println!("Client {client_id} registered as {username}");
 
     tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
-            if writer.write_all(message.as_bytes()).await.is_err() {
+           let json = match serde_json::to_string(&message) {
+               Ok(json) => json,
+               Err(_) => continue,
+           };
+
+            if writer.write_all(json.as_bytes()).await.is_err() {
+                break;
+            }
+
+            if writer.write_all(b"\n").await.is_err() {
                 break;
             }
         }
     });
 
-    broadcast(&clients, &format!("{username} joined the chat")).await;
+    broadcast_system(&clients, &format!("{username} joined the chat")).await;
 
     while let Ok(Some(line)) = lines.next_line().await {
-        let message = line.trim();
+        let parsed: ClientMessage = match serde_json::from_str(&line) {
+            Ok(msg) => msg,
+            Err(_) => {
+                println!("Invalid JSON from {username}");
+                continue;
+            }
+        };
 
-        if message.is_empty() {
-            continue;
+        match parsed {
+            ClientMessage::Chat { message } => {
+                let message = message.trim();
+
+                if message.is_empty(){
+                    continue;
+                }
+
+                println!("{username}: {message}");
+                broadcast_chat(&clients, &username, &message).await;
+            }
+            ClientMessage::SetUsername { .. } => {
+                println!("{username} tried to change username mid-session");
+            }
         }
-
-        println!("{username}: {message}");
-        broadcast(&clients, &format!("{username}: {message}")).await;
     }
 
     {
@@ -186,7 +224,6 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
         clients_guard.remove(&client_id);
     }
 
-    broadcast(&clients, &format!("{username} left the chat")).await;
-
+    broadcast_system(&clients, &format!("{username} left the chat")).await;
     println!("{username} disconnected");
 }
