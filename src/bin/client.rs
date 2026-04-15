@@ -33,6 +33,11 @@ async fn main() {
         .expect("Failed to connect");
 
     println!("Connected to {SOCKET}");
+    println!("\nCommands:");
+    println!("/join <room>");
+    println!("/leave");
+    println!("/rooms\n");
+    println!("/help (Prints this menu again)\n");
 
     let (reader, mut writer) = stream.into_split();
 
@@ -79,6 +84,9 @@ async fn main() {
                            }) => {
                             println!("[{room}] {username}: {message}");
                         }
+                        Ok(ServerMessage::RoomList { rooms }) => {
+                            println!("[rooms] {}", rooms.join(", "));
+                        }
                         Err(_) => {
                             println!("[raw] {}", line.trim());
                         }
@@ -104,6 +112,24 @@ async fn main() {
 
         let message = input.trim();
         if message.is_empty() {
+            continue;
+        }
+
+        if message == "/leave" {
+            let _ = send_json(&mut writer, &ClientMessage::LeaveRoom).await;
+            continue;
+        }
+
+        if message == "/rooms" {
+            let _ = send_json(&mut writer, &ClientMessage::ListRooms).await;
+            continue;
+        }
+
+        if message == "/help" {
+            println!("\nCommands:");
+            println!("/join <room>");
+            println!("/leave");
+            println!("/rooms\n");
             continue;
         }
 

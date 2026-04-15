@@ -116,6 +116,20 @@ async fn move_client_to_room(
     Some((client.username.clone(), old_room))
 }
 
+async fn list_rooms(clients: &Clients) -> Vec<String> {
+    let clients_guard = clients.lock().await;
+
+    let mut rooms: Vec<String> = clients_guard
+        .values()
+        .map(|c| c.room.clone())
+        .collect();
+
+    rooms.sort();
+    rooms.dedup();
+
+    rooms
+}
+
 async fn handle_client(socket: TcpStream, clients: Clients) {
     let client_id = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
 
@@ -277,6 +291,47 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
                         broadcast_system_to_room(
                             &clients, room, &format!("{username} joined {room}"),
                         ).await;
+                    }
+                }
+            }
+            ClientMessage::ListRooms => {
+                let rooms = list_rooms(&clients).await;
+
+                let _ = {
+                    let clients_guard = clients.lock().await;
+                    clients_guard.get(&client_id).map(|client| {
+                        client.tx.send(ServerMessage::RoomList { rooms })
+                    })
+                };
+            }
+
+            ClientMessage::LeaveRoom => {
+                let moved = move_client_to_room(&clients, client_id, DEFAULT_ROOM).await;
+
+                if let Some((username, old_room)) = moved {
+                    let _ = {
+                        let clients_guard = clients.lock().await;
+                        clients_guard.get(&client_id).map(|client| {
+                            client.tx.send(ServerMessage::RoomJoined {
+                                room: DEFAULT_ROOM.to_string(),
+                            })
+                        })
+                    };
+
+                    if old_room != DEFAULT_ROOM {
+                        broadcast_system_to_room(
+                            &clients,
+                            &old_room,
+                            &format!("{username} left {old_room}"),
+                        )
+                            .await;
+
+                        broadcast_system_to_room(
+                            &clients,
+                            DEFAULT_ROOM,
+                            &format!("{username} joined {DEFAULT_ROOM}"),
+                        )
+                            .await;
                     }
                 }
             }

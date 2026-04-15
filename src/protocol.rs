@@ -11,6 +11,12 @@ pub enum ClientMessage {
 
     #[serde(rename = "join_room")]
     JoinRoom { room: String },
+
+    #[serde(rename = "leave_room")]
+    LeaveRoom,
+
+    #[serde(rename = "list_rooms")]
+    ListRooms,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -30,4 +36,7 @@ pub enum ServerMessage {
 
     #[serde(rename = "room_joined")]
     RoomJoined { room: String },
+
+    #[serde(rename = "room_list")]
+    RoomList { rooms: Vec<String> },
 }
