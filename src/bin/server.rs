@@ -41,46 +41,17 @@ async fn main() {
 
 async fn handle_client(socket: TcpStream, clients: Clients) {
     let client_id = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
-    println!("Client {client_id} connected");
 
     let (reader, mut writer) = socket.into_split();
     let reader = BufReader::new(reader);
     let mut lines = reader.lines();
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let username = match lines.next_line().await {
+        Ok(Some(name)) => name.trim().to_string(),
+        _ => return,
+    };
 
-    {
-        let mut clients_guard = clients.lock().await;
-        clients_guard.insert(client_id, tx);
-    }
-
-    let broadcast_message = &format!("Client {client_id} joined the chat").to_string();
-    broadcast(&clients, &broadcast_message).await;
-
-    tokio::spawn(async move {
-        while let Some(message) = rx.recv().await {
-            if writer.write_all(message.as_bytes()).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    while let Ok(Some(line)) = lines.next_line().await {
-        println!("Client {client_id} says: {line}");
-
-        let message = format!("Client {client_id}: {line}");
-        broadcast(&clients, &message).await;
-    }
-
-    {
-        let mut clients_guard = clients.lock().await;
-        clients_guard.remove(&client_id);
-    }
-
-    let broadcast_message = &format!("Client {client_id} left the chat").to_string();
-    broadcast(&clients, &broadcast_message).await;
-
-    println!("Client {client_id} disconnected");
+    println!("Client {client_id} wants username: {username}");
 }
 
 async fn broadcast(clients: &Clients, message: &str) {
