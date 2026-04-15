@@ -39,13 +39,11 @@ struct Config {
 }
 
 fn load_config() -> Config {
-    // let contents = fs::read_to_string("../../config.toml")
-    //     .expect("Failed to read config.toml");
-    let contents = fs::read_to_string("config.toml")
-        .expect("Failed to read config.toml");
+    let contents = fs::read_to_string("client.toml")
+        .expect("Failed to read client.toml");
 
     toml::from_str(&contents)
-        .expect("Invalid config.toml format")
+        .expect("Invalid client.toml format")
 }
 
 impl App {
