@@ -2,6 +2,8 @@
 mod protocol;
 
 use protocol::{ClientMessage, ServerMessage};
+use serde::Deserialize;
+use std::fs;
 
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -20,7 +22,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{tcp::OwnedWriteHalf, TcpStream};
 use tokio::sync::mpsc;
 
-const SOCKET: &str = "127.0.0.1:8888";
 const MAX_MESSAGES: usize = 200;
 
 struct App {
@@ -29,6 +30,20 @@ struct App {
     username: String,
     room: String,
     scroll: usize,
+}
+
+#[derive(Deserialize)]
+struct Config {
+    host: String,
+    port: u16,
+}
+
+fn load_config() -> Config {
+    let contents = fs::read_to_string("config.toml")
+        .expect("Failed to read config.toml");
+
+    toml::from_str(&contents)
+        .expect("Invalid config.toml format")
 }
 
 impl App {
@@ -165,9 +180,14 @@ async fn main() {
 
     let username = username.trim().to_string();
 
-    let stream = TcpStream::connect(SOCKET)
+    let config = load_config();
+    let address = format!("{}:{}", config.host, config.port);
+
+    let stream = TcpStream::connect(&address)
         .await
         .expect("Failed to connect");
+
+    println!("Connecting to {}", address);
 
     let (reader, mut writer) = stream.into_split();
 

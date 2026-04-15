@@ -13,6 +13,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 use serde_json;
+use serde::Deserialize;
+use std::fs;
 
 #[derive(Clone)]
 struct Client {
@@ -25,13 +27,30 @@ type Clients = Arc<Mutex<HashMap<usize, Client>>>;
 static NEXT_CLIENT_ID: AtomicUsize = AtomicUsize::new(1);
 const DEFAULT_ROOM: &str = "lobby";
 
+#[derive(Deserialize)]
+struct Config {
+    host: String,
+    port: u16,
+}
+
+fn load_config() -> Config {
+    let contents = fs::read_to_string("config.toml")
+        .expect("Failed to read config.toml");
+
+    toml::from_str(&contents)
+        .expect("Invalid config.toml format")
+}
+
 #[tokio::main]
 async fn main() {
-    let listener = TcpListener::bind("127.0.0.1:8888")
+    let config = load_config();
+    let address = format!("{}:{}", config.host, config.port);
+
+    let listener = TcpListener::bind(&address)
         .await
         .expect("Failed to bind");
 
-    println!("Server listening on 127.0.0.1:8888");
+    println!("Server listening on {address}");
 
     let clients: Clients = Arc::new(Mutex::new(HashMap::new()));
 
