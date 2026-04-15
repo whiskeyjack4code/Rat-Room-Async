@@ -90,3 +90,15 @@ async fn broadcast(clients: &Clients, message: &str) {
         let _ = tx.send(format!("{message}\n"));
     }
 }
+
+fn is_valid_username(name: &str) -> bool {
+    !name.trim().is_empty() && name.len() <= 20
+}
+
+async fn username_exists(clients: &Clients, username: &str) -> bool {
+    let clients_guard = clients.lock().await;
+
+    clients_guard
+        .values()
+        .any(|client| client.username.eq_ignore_ascii_case(username))
+}
