@@ -245,7 +245,7 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
 
                 if let Some(room) = get_client_room(&clients, client_id).await {
                     println!("[{room}] {username}: {message}");
-                    broadcast_chat_to_room(&clients, &room, &username, message).await;
+                    broadcast_chat_to_room(&clients, &username, &room, message).await;
                 }
             }
             ClientMessage::SetUsername { .. } => {
