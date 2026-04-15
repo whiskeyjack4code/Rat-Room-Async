@@ -2,11 +2,20 @@
 mod protocol;
 
 use protocol::{ClientMessage, ServerMessage};
-
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
+use tokio::net::{tcp::OwnedWriteHalf, TcpStream};
 
 const SOCKET: &str = "127.0.0.1:8888";
+
+async fn send_json(
+    writer: &mut OwnedWriteHalf,
+    message: &ClientMessage,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let json = serde_json::to_string(message)?;
+    writer.write_all(json.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() {
@@ -17,6 +26,8 @@ async fn main() {
     println!("Enter username:");
     stdin_reader.read_line(&mut username).await.unwrap();
 
+    let username = username.trim().to_string();
+
     let stream = TcpStream::connect(SOCKET)
         .await
         .expect("Failed to connect");
@@ -25,7 +36,13 @@ async fn main() {
 
     let (reader, mut writer) = stream.into_split();
 
-    writer.write_all(username.as_bytes()).await.unwrap();
+    let _ = send_json(
+        &mut writer,
+        &ClientMessage::SetUsername {
+            username: username.clone(),
+        },
+    )
+        .await;
 
     tokio::spawn(async move {
         let mut server_reader = BufReader::new(reader);
@@ -40,7 +57,25 @@ async fn main() {
                     break;
                 }
                 Ok(_) => {
-                    print!("{line}");
+                    let parsed: Result<ServerMessage, _> = serde_json::from_str(line.trim());
+
+                    match parsed {
+                        Ok(ServerMessage::Welcome { message }) => {
+                            println!("[welcome] {message}");
+                        }
+                        Ok(ServerMessage::Error { message }) => {
+                            println!("[error] {message}");
+                        }
+                        Ok(ServerMessage::System { message }) => {
+                            println!("[system] {message}");
+                        }
+                        Ok(ServerMessage::Chat { username, message }) => {
+                            println!("[{username}] {message}");
+                        }
+                        Err(_) => {
+                            println!("[raw] {}", line.trim());
+                        }
+                    }
                 }
                 Err(_) => {
                     println!("\nLost connection to server.");
@@ -60,17 +95,17 @@ async fn main() {
             break;
         }
 
-        writer.write_all(input.as_bytes()).await.unwrap();
+        let message = input.trim();
+        if message.is_empty() {
+            continue;
+        }
+
+        let _ = send_json(
+            &mut writer,
+            &ClientMessage::Chat {
+                message: message.to_string(),
+            },
+        )
+            .await;
     }
-}
-
-async fn send_json(writer: &mut tokio::net::tcp::OwnedWriteHalf,
-                   message: &ClientMessage
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let json = serde_json::to_string(&message)?;
-
-    writer.write_all(json.as_bytes()).await?;
-    writer.write_all(b"\n").await?;
-
-    Ok(())
 }
