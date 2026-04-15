@@ -69,8 +69,15 @@ async fn main() {
                         Ok(ServerMessage::System { message }) => {
                             println!("[system] {message}");
                         }
-                        Ok(ServerMessage::Chat { username, message }) => {
-                            println!("[{username}] {message}");
+                        Ok(ServerMessage::RoomJoined { room }) => {
+                            println!("[room] Joined {room}");
+                        }
+                        Ok(ServerMessage::Chat {
+                               username,
+                               room,
+                               message,
+                           }) => {
+                            println!("[{room}] {username}: {message}");
                         }
                         Err(_) => {
                             println!("[raw] {}", line.trim());
@@ -97,6 +104,25 @@ async fn main() {
 
         let message = input.trim();
         if message.is_empty() {
+            continue;
+        }
+
+        if let Some(room_name) = message.strip_prefix("/join ") {
+            let room_name = room_name.trim();
+
+            if room_name.is_empty() {
+                println!("Usage: /join room-name");
+                continue;
+            }
+
+            let _ = send_json(
+                &mut writer,
+                &ClientMessage::JoinRoom {
+                    room: room_name.to_string(),
+                },
+            )
+                .await;
+
             continue;
         }
 

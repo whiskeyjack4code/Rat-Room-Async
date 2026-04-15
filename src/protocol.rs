@@ -8,6 +8,9 @@ pub enum ClientMessage {
 
     #[serde(rename = "chat")]
     Chat { message: String },
+
+    #[serde(rename = "join_room")]
+    JoinRoom { room: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -23,5 +26,8 @@ pub enum ServerMessage {
     System { message: String },
 
     #[serde(rename = "chat")]
-    Chat { username: String, message: String },
+    Chat { username: String, room: String, message: String },
+
+    #[serde(rename = "room_joined")]
+    RoomJoined { room: String },
 }

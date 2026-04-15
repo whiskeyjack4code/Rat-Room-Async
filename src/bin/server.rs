@@ -17,12 +17,13 @@ use serde_json;
 #[derive(Clone)]
 struct Client {
     username: String,
+    room: String,
     tx: mpsc::UnboundedSender<ServerMessage>,
 }
 
 type Clients = Arc<Mutex<HashMap<usize, Client>>>;
-
 static NEXT_CLIENT_ID: AtomicUsize = AtomicUsize::new(1);
+const DEFAULT_ROOM: &str = "lobby";
 
 #[tokio::main]
 async fn main() {
@@ -70,25 +71,49 @@ async fn username_exists(clients: &Clients, username: &str) -> bool {
         .any(|client| client.username.eq_ignore_ascii_case(username))
 }
 
-async fn broadcast_system(clients: &Clients, message: &str) {
+async fn broadcast_system_to_room(clients: &Clients, room: &str, message: &str) {
     let clients_guard = clients.lock().await;
 
     for client in clients_guard.values() {
-        let _ = client.tx.send(ServerMessage::System {
-            message: message.to_string(),
-        });
+        if client.room == room{
+            let _ = client.tx.send(ServerMessage::System {
+                message: message.to_string(),
+            });
+        }
     }
 }
 
-async fn broadcast_chat(clients: &Clients, username: &str, message: &str) {
+async fn broadcast_chat_to_room(clients: &Clients, username: &str, room: &str, message: &str) {
     let clients_guard = clients.lock().await;
 
     for client in clients_guard.values() {
-        let _ = client.tx.send(ServerMessage::Chat {
-            username: username.to_string(),
-            message: message.to_string(),
-        });
+        if client.room == room {
+            let _ = client.tx.send(ServerMessage::Chat {
+                username: username.to_string(),
+                room: room.to_string(),
+                message: message.to_string(),
+            });
+        }
     }
+}
+
+async fn get_client_room(clients: &Clients, client_id: usize) -> Option<String> {
+    let clients_guard = clients.lock().await;
+    clients_guard.get(&client_id).map(|client| client.room.clone())
+}
+
+async fn move_client_to_room(
+    clients: &Clients,
+    client_id: usize,
+    new_room: &str,
+) -> Option<(String, String)> {
+    let mut clients_guard = clients.lock().await;
+
+    let client = clients_guard.get_mut(&client_id)?;
+    let old_room = client.room.clone();
+    client.room = new_room.to_string();
+
+    Some((client.username.clone(), old_room))
 }
 
 async fn handle_client(socket: TcpStream, clients: Clients) {
@@ -160,6 +185,7 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
             client_id,
             Client {
                 username: username.clone(),
+                room: DEFAULT_ROOM.to_string(),
                 tx,
             },
         );
@@ -169,6 +195,13 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
         &mut writer,
         &ServerMessage::Welcome {
             message: format!("Welcome {}", username),
+        },
+    ).await;
+
+    let _ = send_json(
+        &mut writer,
+        &ServerMessage::RoomJoined {
+            room: DEFAULT_ROOM.to_string(),
         },
     ).await;
 
@@ -191,7 +224,7 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
         }
     });
 
-    broadcast_system(&clients, &format!("{username} joined the chat")).await;
+    broadcast_system_to_room(&clients, DEFAULT_ROOM, &format!("{username} joined {DEFAULT_ROOM}")).await;
 
     while let Ok(Some(line)) = lines.next_line().await {
         let parsed: ClientMessage = match serde_json::from_str(&line) {
@@ -210,20 +243,53 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
                     continue;
                 }
 
-                println!("{username}: {message}");
-                broadcast_chat(&clients, &username, &message).await;
+                if let Some(room) = get_client_room(&clients, client_id).await {
+                    println!("[{room}] {username}: {message}");
+                    broadcast_chat_to_room(&clients, &room, &username, message).await;
+                }
             }
             ClientMessage::SetUsername { .. } => {
                 println!("{username} tried to change username mid-session");
             }
+            ClientMessage::JoinRoom { room } => {
+                let room = room.trim();
+
+                if room.is_empty(){
+                    continue;
+                }
+
+                let moved = move_client_to_room(&clients, client_id, room).await;
+                if let Some((username, old_room)) = moved {
+                    let _ = {
+                        let clients_guard = clients.lock().await;
+                        clients_guard.get(&client_id).map(|client| {
+                            client.tx.send(ServerMessage::RoomJoined {
+                                room: room.to_string(),
+                            })
+                        })
+                    };
+
+                    if old_room != room {
+                        broadcast_system_to_room(
+                            &clients, &old_room, &format!("{username} left {old_room}"),
+                        ).await;
+
+                        broadcast_system_to_room(
+                            &clients, room, &format!("{username} joined {room}"),
+                        ).await;
+                    }
+                }
+            }
         }
     }
+
+    let current_room = get_client_room(&clients, client_id).await.unwrap_or_else(|| DEFAULT_ROOM.to_string());
 
     {
         let mut clients_guard = clients.lock().await;
         clients_guard.remove(&client_id);
     }
 
-    broadcast_system(&clients, &format!("{username} left the chat")).await;
+    broadcast_system_to_room(&clients, &current_room, &format!("{username} left {current_room}")).await;
     println!("{username} disconnected");
 }
