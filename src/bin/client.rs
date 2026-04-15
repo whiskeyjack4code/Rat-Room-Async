@@ -17,9 +17,17 @@ async fn main() {
             line.clear();
 
             match server_reader.read_line(&mut line).await {
-                Ok(0) => break,
-                Ok(_) => print!("{}", line),
-                Err(_) => break,
+                Ok(0) => {
+                    println!("\nServer closed the connection");
+                    break;
+                }
+                Ok(_) => {
+                    print!("{}", line)
+                }
+                Err(_) => {
+                    println!("\nLost connection to the server");
+                    break;
+                }
             }
         }
     });
@@ -30,8 +38,12 @@ async fn main() {
 
     loop {
         input.clear();
-        stdin_reader.read_line(&mut input).await.unwrap();
+        let bytes_read = stdin_reader.read_line(&mut input).await.unwrap();
+
+        if bytes_read == 0 {
+            break;
+
+        }
         writer.write_all(input.as_bytes()).await.unwrap();
     }
-
 }
