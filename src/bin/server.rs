@@ -17,7 +17,7 @@ use serde_json;
 #[derive(Clone)]
 struct Client {
     username: String,
-    tx: mpsc::UnboundedSender<String>,
+    tx: mpsc::UnboundedSender<ServerMessage>,
 }
 
 type Clients = Arc<Mutex<HashMap<usize, Client>>>;
@@ -70,11 +70,24 @@ async fn username_exists(clients: &Clients, username: &str) -> bool {
         .any(|client| client.username.eq_ignore_ascii_case(username))
 }
 
-async fn broadcast(clients: &Clients, message: &str) {
+async fn broadcast_system(clients: &Clients, message: &str) {
     let clients_guard = clients.lock().await;
 
     for client in clients_guard.values() {
-        let _ = client.tx.send(format!("{message}\n"));
+        let _ = client.tx.send(ServerMessage::System {
+            message: message.to_string(),
+        });
+    }
+}
+
+async fn broadcast_chat(clients: &Clients, username: &str, message: &str) {
+    let clients_guard = clients.lock().await;
+
+    for client in clients_guard.values() {
+        let _ = client.tx.send(ServerMessage::Chat {
+            username: username.to_string(),
+            message: message.to_string(),
+        });
     }
 }
 
