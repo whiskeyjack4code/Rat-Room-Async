@@ -42,7 +42,6 @@ async fn main() {
 
         if bytes_read == 0 {
             break;
-
         }
         writer.write_all(input.as_bytes()).await.unwrap();
     }

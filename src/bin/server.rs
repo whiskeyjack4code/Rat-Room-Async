@@ -7,8 +7,14 @@ use std::sync::{
 };
 use tokio::sync::{mpsc, Mutex};
 
+#[derive(Clone)]
+struct Client{
+    username: String,
+    tx: mpsc::UnboundedSender<String>,
+}
+
 type ClientTx = mpsc::UnboundedSender<String>;
-type Clients = Arc<Mutex<HashMap<usize, ClientTx>>>;
+type Clients = Arc<Mutex<HashMap<usize, Client>>>;
 
 static NEXT_CLIENT_ID: AtomicUsize = AtomicUsize::new(1);
 
