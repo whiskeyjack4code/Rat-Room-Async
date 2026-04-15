@@ -1,3 +1,8 @@
+#[path = "../protocol.rs"]
+mod protocol;
+
+use protocol::{ClientMessage, ServerMessage};
+
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
@@ -57,4 +62,15 @@ async fn main() {
 
         writer.write_all(input.as_bytes()).await.unwrap();
     }
+}
+
+async fn send_json(writer: &mut tokio::net::tcp::OwnedWriteHalf,
+                   message: &ClientMessage
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let json = serde_json::to_string(&message)?;
+
+    writer.write_all(json.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+
+    Ok(())
 }

@@ -1,3 +1,8 @@
+#[path = "../protocol.rs"]
+mod protocol;
+
+use protocol::{ClientMessage, ServerMessage};
+
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -7,6 +12,7 @@ use std::sync::{
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
+use serde_json;
 
 #[derive(Clone)]
 struct Client {
@@ -38,6 +44,18 @@ async fn main() {
             handle_client(socket, clients).await;
         });
     }
+}
+
+async fn send_json(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    message: &ServerMessage,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let json = serde_json::to_string(&message)?;
+
+    writer.write_all(json.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+
+    Ok(())
 }
 
 fn is_valid_username(name: &str) -> bool {
