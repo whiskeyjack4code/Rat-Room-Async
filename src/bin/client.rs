@@ -4,16 +4,16 @@ mod protocol;
 use protocol::{ClientMessage, ServerMessage};
 
 use crossterm::{
-    event::{self, Event, KeyEventKind, KeyCode},
+    event::{self, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 
 use ratatui::{
     backend::CrosstermBackend,
-    Terminal,
     layout::{Constraint, Direction, Layout},
     widgets::{Block, Borders, Paragraph},
+    Terminal,
 };
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -21,18 +21,54 @@ use tokio::net::{tcp::OwnedWriteHalf, TcpStream};
 use tokio::sync::mpsc;
 
 const SOCKET: &str = "127.0.0.1:8888";
+const MAX_MESSAGES: usize = 200;
 
 struct App {
     messages: Vec<String>,
     input: String,
     username: String,
     room: String,
+    scroll: usize,
 }
 
-async fn send_json(
-    writer: &mut OwnedWriteHalf,
-    message: &ClientMessage,
-) {
+impl App {
+    fn new(username: String) -> Self {
+        Self {
+            messages: Vec::new(),
+            input: String::new(),
+            username,
+            room: "lobby".to_string(),
+            scroll: 0,
+        }
+    }
+
+    fn push_message(&mut self, message: String) {
+        self.messages.push(message);
+
+        if self.messages.len() > MAX_MESSAGES {
+            let overflow = self.messages.len() - MAX_MESSAGES;
+            self.messages.drain(0..overflow);
+        }
+
+        self.scroll_to_bottom();
+    }
+
+    fn scroll_up(&mut self) {
+        if self.scroll > 0 {
+            self.scroll -= 1;
+        }
+    }
+
+    fn scroll_down(&mut self) {
+        self.scroll += 1;
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        self.scroll = self.messages.len();
+    }
+}
+
+async fn send_json(writer: &mut OwnedWriteHalf, message: &ClientMessage) {
     if let Ok(json) = serde_json::to_string(message) {
         let _ = writer.write_all(json.as_bytes()).await;
         let _ = writer.write_all(b"\n").await;
@@ -51,13 +87,17 @@ async fn handle_input(app: &mut App, writer: &mut OwnedWriteHalf) {
     } else if message == "/rooms" {
         send_json(writer, &ClientMessage::ListRooms).await;
     } else if let Some(room) = message.strip_prefix("/join ") {
-        send_json(
-            writer,
-            &ClientMessage::JoinRoom {
-                room: room.trim().to_string(),
-            },
-        )
-            .await;
+        let room = room.trim();
+
+        if !room.is_empty() {
+            send_json(
+                writer,
+                &ClientMessage::JoinRoom {
+                    room: room.to_string(),
+                },
+            )
+                .await;
+        }
     } else {
         send_json(
             writer,
@@ -75,13 +115,25 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &App) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),
-            Constraint::Length(3),
-            Constraint::Length(1),
+            Constraint::Min(1),     // chat
+            Constraint::Length(3),  // input
+            Constraint::Length(2),  // status/help
         ])
         .split(frame.area());
 
-    let messages = Paragraph::new(app.messages.join("\n"))
+    let chat_height = layout[0].height.saturating_sub(2) as usize;
+
+    let total_messages = app.messages.len();
+    let end = total_messages.saturating_sub(app.scroll.saturating_sub(chat_height));
+    let start = end.saturating_sub(chat_height);
+
+    let visible_messages = if start < end && end <= total_messages {
+        app.messages[start..end].join("\n")
+    } else {
+        String::new()
+    };
+
+    let messages = Paragraph::new(visible_messages)
         .block(Block::default().borders(Borders::ALL).title("Chat"));
 
     frame.render_widget(messages, layout[0]);
@@ -92,16 +144,19 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &App) {
     frame.render_widget(input, layout[1]);
 
     let status = Paragraph::new(format!(
-        "User: {} | Room: {}",
+        "User: {} | Room: {} | Commands: /join <room>  /leave  /rooms | Esc to quit",
         app.username, app.room
     ));
 
     frame.render_widget(status, layout[2]);
+
+    let cursor_x = layout[1].x + 1 + app.input.len() as u16;
+    let cursor_y = layout[1].y + 1;
+    frame.set_cursor_position((cursor_x, cursor_y));
 }
 
 #[tokio::main]
 async fn main() {
-    // Username input BEFORE raw mode
     let mut stdin = BufReader::new(tokio::io::stdin());
     let mut username = String::new();
 
@@ -124,7 +179,6 @@ async fn main() {
     )
         .await;
 
-    // Setup message channel
     let (tx, mut rx) = mpsc::unbounded_channel();
 
     tokio::spawn(async move {
@@ -146,7 +200,6 @@ async fn main() {
         }
     });
 
-    // Setup TUI
     enable_raw_mode().unwrap();
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen).unwrap();
@@ -154,46 +207,42 @@ async fn main() {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).unwrap();
 
-    let mut app = App {
-        messages: Vec::new(),
-        input: String::new(),
-        username,
-        room: "lobby".to_string(),
-    };
+    let mut app = App::new(username);
 
-    // Main UI loop
     loop {
-        // Handle incoming server messages
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 ServerMessage::Welcome { message } => {
-                    app.messages.push(format!("[welcome] {message}"));
+                    app.push_message(format!("[welcome] {message}"));
                 }
                 ServerMessage::System { message } => {
-                    app.messages.push(format!("[system] {message}"));
+                    app.push_message(format!("[system] {message}"));
                 }
-                ServerMessage::Chat { username, room, message } => {
-                    app.messages.push(format!("[{room}] {username}: {message}"));
+                ServerMessage::Chat {
+                    username,
+                    room,
+                    message,
+                } => {
+                    app.push_message(format!("[{room}] {username}: {message}"));
                 }
                 ServerMessage::RoomJoined { room } => {
                     app.room = room.clone();
-                    app.messages.push(format!("[room] Joined {room}"));
+                    app.push_message(format!("[room] Joined {room}"));
                 }
                 ServerMessage::RoomList { rooms } => {
-                    app.messages.push(format!("[rooms] {}", rooms.join(", ")));
+                    app.push_message(format!("[rooms] {}", rooms.join(", ")));
                 }
                 ServerMessage::Error { message } => {
-                    app.messages.push(format!("[error] {message}"));
+                    app.push_message(format!("[error] {message}"));
                 }
             }
         }
 
         terminal.draw(|f| draw_ui(f, &app)).unwrap();
 
-        // Handle keyboard input
         if event::poll(std::time::Duration::from_millis(50)).unwrap() {
             if let Event::Key(key) = event::read().unwrap() {
-                if key.kind == KeyEventKind::Press {
+                if key.kind == event::KeyEventKind::Press {
                     match key.code {
                         KeyCode::Char(c) => {
                             app.input.push(c);
@@ -204,6 +253,12 @@ async fn main() {
                         KeyCode::Enter => {
                             handle_input(&mut app, &mut writer).await;
                         }
+                        KeyCode::Up => {
+                            app.scroll_up();
+                        }
+                        KeyCode::Down => {
+                            app.scroll_down();
+                        }
                         KeyCode::Esc => break,
                         _ => {}
                     }
@@ -212,7 +267,6 @@ async fn main() {
         }
     }
 
-    // Cleanup terminal
     disable_raw_mode().unwrap();
     execute!(terminal.backend_mut(), LeaveAlternateScreen).unwrap();
     terminal.show_cursor().unwrap();
