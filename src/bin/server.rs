@@ -62,7 +62,42 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
         return;
     }
 
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+
+    {
+        let mut clients_guard = clients.lock().await;
+        clients_guard.insert(
+            client_id,
+            Client {
+                username: username.clone(),
+                tx,
+            },
+        );
+    }
+
+    let welcome = format!("Welcome {}!", username);
+    let _ = writer.write_all(welcome.as_bytes()).await;
+
     println!("Client {client_id} registered as {username}");
+
+    tokio::spawn(async move {
+        while let Some(message) = rx.recv().await {
+            if writer.write_all(message.as_bytes()).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        println!("{username}: {line}");
+    }
+
+    {
+        let mut clients_guard = clients.lock().await;
+        clients_guard.remove(&client_id);
+    }
+
+    println!("{username} disconnected");
 }
 
 async fn broadcast(clients: &Clients, message: &str) {
