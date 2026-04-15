@@ -48,6 +48,9 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
         clients_guard.insert(client_id, tx);
     }
 
+    let broadcast_message = &format!("Client {client_id} joined the chat").to_string();
+    broadcast(&clients, &broadcast_message).await;
+
     tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
             if writer.write_all(message.as_bytes()).await.is_err() {
@@ -58,12 +61,18 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
 
     while let Ok(Some(line)) = lines.next_line().await {
         println!("Client {client_id} says: {line}");
+
+        let message = format!("Client {client_id}: {line}");
+        broadcast(&clients, &message).await;
     }
 
     {
         let mut clients_guard = clients.lock().await;
         clients_guard.remove(&client_id);
     }
+
+    let broadcast_message = &format!("Client {client_id} left the chat").to_string();
+    broadcast(&clients, &broadcast_message).await;
 
     println!("Client {client_id} disconnected");
 }
