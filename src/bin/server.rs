@@ -4,6 +4,7 @@ mod protocol;
 use protocol::{ClientMessage, ServerMessage};
 
 use std::collections::HashMap;
+use std::net::Shutdown::Write;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -13,6 +14,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 use serde_json;
+use tokio::net::windows::named_pipe::PipeEnd::Server;
 
 #[derive(Clone)]
 struct Client {
@@ -98,9 +100,36 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
     let reader = BufReader::new(reader);
     let mut lines = reader.lines();
 
-    let username = match lines.next_line().await {
-        Ok(Some(name)) => name.trim().to_string(),
+    let first_line = match lines.next_line().await {
+        Ok(Some(line)) => line,
         _ => return,
+    };
+
+    let first_message: ClientMessage = match serde_json::from_str(&first_line) {
+        Ok(msg) => msg,
+        Err(_) => {
+            let _ = send_json(
+                &mut writer,
+                &ServerMessage::Error {
+                    message: "Invalid protocol message".to_string(),
+                },
+            ).await;
+
+            return;
+        }
+    };
+
+    let username = match first_message {
+       ClientMessage::SetUsername { username } => username.trim().to_string(),
+        _ => {
+            let _ = send_json(
+                &mut writer,
+                &ServerMessage::Error {
+                    message: "First message must be 'set_username'.".to_string(),
+                },
+            ).await;
+            return;
+        }
     };
 
     if !is_valid_username(&username) {
