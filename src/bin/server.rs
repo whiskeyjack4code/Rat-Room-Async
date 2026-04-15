@@ -1,6 +1,7 @@
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use std::collections::HashMap;
+use std::fs::write;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -51,7 +52,17 @@ async fn handle_client(socket: TcpStream, clients: Clients) {
         _ => return,
     };
 
-    println!("Client {client_id} wants username: {username}");
+    if !is_valid_username(&username) {
+        let _ = writer.write_all(b"Invalid username.\n").await;
+        return;
+    }
+
+    if username_exists(&clients, &username).await {
+        let _ = writer.write_all(b"Username already taken.\n").await;
+        return;
+    }
+
+    println!("Client {client_id} registered as {username}");
 }
 
 async fn broadcast(clients: &Clients, message: &str) {
