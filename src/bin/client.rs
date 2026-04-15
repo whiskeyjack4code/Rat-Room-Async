@@ -2,29 +2,111 @@
 mod protocol;
 
 use protocol::{ClientMessage, ServerMessage};
-use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+use crossterm::{
+    event::{self, Event, KeyEventKind, KeyCode},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+
+use ratatui::{
+    backend::CrosstermBackend,
+    Terminal,
+    layout::{Constraint, Direction, Layout},
+    widgets::{Block, Borders, Paragraph},
+};
+
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{tcp::OwnedWriteHalf, TcpStream};
+use tokio::sync::mpsc;
 
 const SOCKET: &str = "127.0.0.1:8888";
+
+struct App {
+    messages: Vec<String>,
+    input: String,
+    username: String,
+    room: String,
+}
 
 async fn send_json(
     writer: &mut OwnedWriteHalf,
     message: &ClientMessage,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let json = serde_json::to_string(message)?;
-    writer.write_all(json.as_bytes()).await?;
-    writer.write_all(b"\n").await?;
-    Ok(())
+) {
+    if let Ok(json) = serde_json::to_string(message) {
+        let _ = writer.write_all(json.as_bytes()).await;
+        let _ = writer.write_all(b"\n").await;
+    }
+}
+
+async fn handle_input(app: &mut App, writer: &mut OwnedWriteHalf) {
+    let message = app.input.trim().to_string();
+
+    if message.is_empty() {
+        return;
+    }
+
+    if message == "/leave" {
+        send_json(writer, &ClientMessage::LeaveRoom).await;
+    } else if message == "/rooms" {
+        send_json(writer, &ClientMessage::ListRooms).await;
+    } else if let Some(room) = message.strip_prefix("/join ") {
+        send_json(
+            writer,
+            &ClientMessage::JoinRoom {
+                room: room.trim().to_string(),
+            },
+        )
+            .await;
+    } else {
+        send_json(
+            writer,
+            &ClientMessage::Chat {
+                message: message.clone(),
+            },
+        )
+            .await;
+    }
+
+    app.input.clear();
+}
+
+fn draw_ui(frame: &mut ratatui::Frame, app: &App) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
+        .split(frame.area());
+
+    let messages = Paragraph::new(app.messages.join("\n"))
+        .block(Block::default().borders(Borders::ALL).title("Chat"));
+
+    frame.render_widget(messages, layout[0]);
+
+    let input = Paragraph::new(app.input.as_str())
+        .block(Block::default().borders(Borders::ALL).title("Input"));
+
+    frame.render_widget(input, layout[1]);
+
+    let status = Paragraph::new(format!(
+        "User: {} | Room: {}",
+        app.username, app.room
+    ));
+
+    frame.render_widget(status, layout[2]);
 }
 
 #[tokio::main]
 async fn main() {
-    let stdin = io::stdin();
-    let mut stdin_reader = BufReader::new(stdin);
-
+    // Username input BEFORE raw mode
+    let mut stdin = BufReader::new(tokio::io::stdin());
     let mut username = String::new();
+
     println!("Enter username:");
-    stdin_reader.read_line(&mut username).await.unwrap();
+    stdin.read_line(&mut username).await.unwrap();
 
     let username = username.trim().to_string();
 
@@ -32,16 +114,9 @@ async fn main() {
         .await
         .expect("Failed to connect");
 
-    println!("Connected to {SOCKET}");
-    println!("\nCommands:");
-    println!("/join <room>");
-    println!("/leave");
-    println!("/rooms\n");
-    println!("/help (Prints this menu again)\n");
-
     let (reader, mut writer) = stream.into_split();
 
-    let _ = send_json(
+    send_json(
         &mut writer,
         &ClientMessage::SetUsername {
             username: username.clone(),
@@ -49,115 +124,96 @@ async fn main() {
     )
         .await;
 
+    // Setup message channel
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
     tokio::spawn(async move {
-        let mut server_reader = BufReader::new(reader);
+        let mut reader = BufReader::new(reader);
         let mut line = String::new();
 
         loop {
             line.clear();
 
-            match server_reader.read_line(&mut line).await {
-                Ok(0) => {
-                    println!("\nServer closed the connection.");
-                    break;
-                }
+            match reader.read_line(&mut line).await {
+                Ok(0) => break,
                 Ok(_) => {
-                    let parsed: Result<ServerMessage, _> = serde_json::from_str(line.trim());
-
-                    match parsed {
-                        Ok(ServerMessage::Welcome { message }) => {
-                            println!("[welcome] {message}");
-                        }
-                        Ok(ServerMessage::Error { message }) => {
-                            println!("[error] {message}");
-                        }
-                        Ok(ServerMessage::System { message }) => {
-                            println!("[system] {message}");
-                        }
-                        Ok(ServerMessage::RoomJoined { room }) => {
-                            println!("[room] Joined {room}");
-                        }
-                        Ok(ServerMessage::Chat {
-                               username,
-                               room,
-                               message,
-                           }) => {
-                            println!("[{room}] {username}: {message}");
-                        }
-                        Ok(ServerMessage::RoomList { rooms }) => {
-                            println!("[rooms] {}", rooms.join(", "));
-                        }
-                        Err(_) => {
-                            println!("[raw] {}", line.trim());
-                        }
+                    if let Ok(msg) = serde_json::from_str::<ServerMessage>(line.trim()) {
+                        let _ = tx.send(msg);
                     }
                 }
-                Err(_) => {
-                    println!("\nLost connection to server.");
-                    break;
-                }
+                Err(_) => break,
             }
         }
     });
 
-    let mut input = String::new();
+    // Setup TUI
+    enable_raw_mode().unwrap();
+    let mut stdout = std::io::stdout();
+    execute!(stdout, EnterAlternateScreen).unwrap();
 
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = App {
+        messages: Vec::new(),
+        input: String::new(),
+        username,
+        room: "lobby".to_string(),
+    };
+
+    // Main UI loop
     loop {
-        input.clear();
-
-        let bytes_read = stdin_reader.read_line(&mut input).await.unwrap();
-        if bytes_read == 0 {
-            break;
-        }
-
-        let message = input.trim();
-        if message.is_empty() {
-            continue;
-        }
-
-        if message == "/leave" {
-            let _ = send_json(&mut writer, &ClientMessage::LeaveRoom).await;
-            continue;
-        }
-
-        if message == "/rooms" {
-            let _ = send_json(&mut writer, &ClientMessage::ListRooms).await;
-            continue;
-        }
-
-        if message == "/help" {
-            println!("\nCommands:");
-            println!("/join <room>");
-            println!("/leave");
-            println!("/rooms\n");
-            continue;
-        }
-
-        if let Some(room_name) = message.strip_prefix("/join ") {
-            let room_name = room_name.trim();
-
-            if room_name.is_empty() {
-                println!("Usage: /join room-name");
-                continue;
+        // Handle incoming server messages
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                ServerMessage::Welcome { message } => {
+                    app.messages.push(format!("[welcome] {message}"));
+                }
+                ServerMessage::System { message } => {
+                    app.messages.push(format!("[system] {message}"));
+                }
+                ServerMessage::Chat { username, room, message } => {
+                    app.messages.push(format!("[{room}] {username}: {message}"));
+                }
+                ServerMessage::RoomJoined { room } => {
+                    app.room = room.clone();
+                    app.messages.push(format!("[room] Joined {room}"));
+                }
+                ServerMessage::RoomList { rooms } => {
+                    app.messages.push(format!("[rooms] {}", rooms.join(", ")));
+                }
+                ServerMessage::Error { message } => {
+                    app.messages.push(format!("[error] {message}"));
+                }
             }
-
-            let _ = send_json(
-                &mut writer,
-                &ClientMessage::JoinRoom {
-                    room: room_name.to_string(),
-                },
-            )
-                .await;
-
-            continue;
         }
 
-        let _ = send_json(
-            &mut writer,
-            &ClientMessage::Chat {
-                message: message.to_string(),
-            },
-        )
-            .await;
+        terminal.draw(|f| draw_ui(f, &app)).unwrap();
+
+        // Handle keyboard input
+        if event::poll(std::time::Duration::from_millis(50)).unwrap() {
+            if let Event::Key(key) = event::read().unwrap() {
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Char(c) => {
+                            app.input.push(c);
+                        }
+                        KeyCode::Backspace => {
+                            app.input.pop();
+                        }
+                        KeyCode::Enter => {
+                            handle_input(&mut app, &mut writer).await;
+                        }
+                        KeyCode::Esc => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
+
+    // Cleanup terminal
+    disable_raw_mode().unwrap();
+    execute!(terminal.backend_mut(), LeaveAlternateScreen).unwrap();
+    terminal.show_cursor().unwrap();
 }
